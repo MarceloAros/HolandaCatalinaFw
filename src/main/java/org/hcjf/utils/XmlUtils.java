@@ -1,10 +1,17 @@
 package org.hcjf.utils;
 
+import org.hcjf.encoding.MimeType;
+import org.hcjf.io.net.http.HttpClient;
+import org.hcjf.io.net.http.HttpHeader;
+import org.hcjf.io.net.http.HttpMethod;
+import org.hcjf.io.net.http.HttpResponse;
+import org.hcjf.io.net.http.soap.SoapClient;
 import org.hcjf.layers.Layer;
 import org.hcjf.layers.LayerInterface;
 import org.hcjf.layers.Layers;
 import org.hcjf.layers.distributed.DistributedLayerInterface;
 
+import java.net.URL;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
@@ -28,6 +35,7 @@ public final class XmlUtils {
     private static final class Patterns {
         private static final String OPEN_TAG = "<%s%s>";
         private static final String CLOSE_TAG = "</%s>";
+        private static final String INLINE_TAG = "<%s%s/>";
         private static final String ATTRIBUTE = " %s=\"%s\"";
         private static final String CDATA = "<![CDATA[%s]]>";
         private static final String ATTRIBUTE_GROUP_NAME = "attribute";
@@ -72,7 +80,28 @@ public final class XmlUtils {
         Layers.publishLayer(XMLPrinter.class);
         Layers.publishLayer(JsonPrinter.class);
 
-        Layers.get(Printer.class, "csv").print(Map.of());
+        //Layers.get(Printer.class, "csv").print(Map.of());
+
+
+        SoapClient soapClient = new SoapClient("http://gcaba.urbetrack.com/App_Services/Higiene.asmx?wsdl");
+        System.out.println(soapClient.getNamespace());
+        System.out.println(soapClient.getAbbreviatedNamespace());
+        Map<String,Object> model = new HashMap<>();
+        model.put("username", "javaito");
+        model.put("password", "pass");
+        model.put("codigosRutas", List.of("c1", "c2", "c3"));
+        model.put("estado", 1);
+        model.put("tipoPuntoRecoleccion", 1);
+        model.put("latitud", 52.36);
+        model.put("altura", 234);
+        model.put("tipoMobiliario", "tipo1");
+        model.put("codigoPuntoRecoleccion", "AA23");
+        model.put("descripcion", "Hola Mundo!");
+        model.put("calle", "Mitre");
+        model.put("longitud", 52.3265);
+        Map<String,Object> response = soapClient.request("Higiene","CrearPuntoRecoleccionMultiplesRutas", model);
+
+        String xml = "";
     }
 
     public static void main1(String[] args) throws Exception {
@@ -218,10 +247,12 @@ public final class XmlUtils {
     private static Map<String,Object> parse(Map<String,Object> currentObject, List<String> groups, AtomicInteger index, AtomicInteger lastIndexOf, Map<String,String> cdataValues) {
         String currentTag = groups.get(index.get());
         if(currentTag.startsWith(Strings.SLASH)) {
-            //In this case we found the closing tag
+            //In this case, we found the closing tag
             if(!currentObject.containsKey(Fields.HAS_CHILDREN)) {
                 Integer currentIndex = index.get();
-                currentObject.put(Fields.VALUE, getValue(groups,currentIndex + 1, currentIndex, lastIndexOf, cdataValues));
+                String previousTag = groups.get(index.get()-1);
+//                if (previousTag.)
+                currentObject.put(Fields.VALUE, getValue(groups,currentIndex, currentIndex+1, lastIndexOf, cdataValues));
             } else {
                 currentObject.remove(Fields.HAS_CHILDREN);
             }
@@ -305,51 +336,67 @@ public final class XmlUtils {
 //            result = cdataValues.get(result);
 //        }
 //        return Strings.deductInstance(result.trim());
-        return "";
+        return null;
     }
 
     public static String toXml(Map<String,Object> root) {
-        StringBuilder result = new StringBuilder();
-        for(String key : root.keySet()) {
-            Object value = root.get(key);
-            if(value instanceof Map) {
-
-            } else if(value instanceof Collection) {
-
-            } else {
-
-            }
-        }
-        return result.toString();
+        String rootKey = root.keySet().stream().findFirst().get();
+        Map<String,Object> body = Introspection.resolve(root, rootKey);
+        return toXml(rootKey, body, 0);
     }
 
-    private static String toXml(StringBuilder builder, Map<String,Object> tag) {
+    private static String toXml(String tagKey, Map<String,Object> tag, int tabSize) {
+        Strings.Builder result = new Strings.Builder();
+        StringBuilder attributes = new StringBuilder();
+        StringBuilder subTags = new StringBuilder();
+        Object innerTagValue = null;
         for(String key : tag.keySet()) {
             Object value = tag.get(key);
-            if(tag.size() == 1) {
-                if (value instanceof Map) {
-
-                } else if (value instanceof Collection) {
-
-                } else {
-                    if (value != null) {
-                        builder.append(String.format(Patterns.OPEN_TAG, key, Strings.EMPTY_STRING));
-                        builder.append(value);
-                        builder.append(String.format(Patterns.CLOSE_TAG, key));
-                    } else {
-                        builder.append(String.format(Patterns.OPEN_TAG, key, Strings.SLASH));
+            if (key.equals(Fields.VALUE)) {
+                innerTagValue = Introspection.resolve(tag, Fields.VALUE);
+            } else if (value instanceof Map) {
+                subTags.append(toXml(key, (Map<String,Object>) value, tabSize + 1));
+            } else if (value instanceof Collection) {
+                for (Object valueIntoCollection : (Collection)value) {
+                    if (valueIntoCollection instanceof Map) {
+                        subTags.append(toXml(key, (Map<String, Object>)valueIntoCollection, tabSize + 1));
                     }
                 }
             } else {
-                if (value instanceof Map) {
-
-                } else if (value instanceof Collection) {
-
-                } else {
-
-                }
+                attributes.append(String.format(Patterns.ATTRIBUTE, key, value.toString()));
             }
         }
-        return null;
+
+        if (subTags.length() == 0) {
+            if (innerTagValue != null) {
+                Collection<Object> values;
+                if (innerTagValue instanceof Collection) {
+                    values = (Collection<Object>) innerTagValue;
+                } else {
+                    values = new ArrayList<>();
+                    values.add(innerTagValue);
+                }
+                for (Object obj : values) {
+                    result.append("\t".repeat(Math.max(0, tabSize)));
+                    result.append(String.format(Patterns.OPEN_TAG, tagKey, attributes));
+                    result.append(obj);
+                    result.append(String.format(Patterns.CLOSE_TAG, tagKey), "\r\n");
+                }
+                result.cleanBuffer();
+            } else {
+                result.append("\t".repeat(Math.max(0, tabSize)));
+                result.append(String.format(Patterns.INLINE_TAG, tagKey, attributes));
+            }
+        } else {
+            result.append("\t".repeat(Math.max(0, tabSize)));
+            result.append(String.format(Patterns.OPEN_TAG, tagKey, attributes));
+            result.append("\r\n");
+            result.append(subTags);
+            result.append("\t".repeat(Math.max(0, tabSize)));
+            result.append(String.format(Patterns.CLOSE_TAG, tagKey));
+        }
+        result.append("\r\n");
+
+        return result.toString();
     }
 }
